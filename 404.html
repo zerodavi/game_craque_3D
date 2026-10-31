@@ -95,11 +95,18 @@ h3{margin:6px 0 2px;font:14px Impact,sans-serif;color:#ffd400;letter-spacing:1px
 <div class="card main"><button id="bS">&#9654; JOGAR</button><button id="bMP" class="sec">🌐 MULTIPLAYER ONLINE</button><button id="bCfg" class="sec">&#9881; CONFIGURAÇÕES</button></div></div>
 <div class="ov" id="mp"><div class="bg"></div><div class="card">
  <h2 style="text-align:center">🌐 MULTIPLAYER ONLINE</h2>
- <p style="font-size:13px;line-height:1.5;text-align:center">Crie uma sala e envie o código ao seu adversário, ou entre em uma sala existente.</p>
+ <p style="font-size:13px;line-height:1.5;text-align:center">Crie uma sala (o anfitrião espera o adversário) ou entre em uma sala da lista / pelo código.</p>
  <label>Seu time <select id="mpTeam0"></select></label>
  <label>Time adversário <select id="mpTeam1"></select></label>
  <button id="mpCreate">➕ CRIAR SALA</button>
  <div style="height:1px;background:#ffffff33;margin:12px 0"></div>
+ <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+  <b style="font-size:13px;color:#ffd400">Salas abertas</b>
+  <button id="mpRefresh" class="mini" style="padding:4px 10px;font-size:12px">🔄 Atualizar</button>
+ </div>
+ <div id="mpRooms" style="max-height:140px;overflow:auto;background:#0006;border-radius:10px;padding:6px;margin-bottom:10px;font-size:12px;min-height:36px">
+  <div style="opacity:.6;text-align:center;padding:8px">Carregando salas...</div>
+ </div>
  <label>Código da sala <input id="mpCode" maxlength="6" placeholder="Ex.: A7K9Q2" style="width:48%;text-transform:uppercase"></label>
  <button id="mpJoin">ENTRAR NA SALA</button>
  <div id="mpStatus" style="font-size:12px;text-align:center;min-height:20px;margin-top:8px"></div>
@@ -428,50 +435,118 @@ class Game{
   this.mk=new THREE.Group();const ring=new THREE.Mesh(new THREE.RingGeometry(.7,.95,24),new THREE.MeshBasicMaterial({color:0xffe600,side:THREE.DoubleSide}));ring.rotation.x=-Math.PI/2;ring.position.y=.05;
   const arr=new THREE.Mesh(new THREE.ConeGeometry(.3,.6,4),new THREE.MeshBasicMaterial({color:0xffe600}));arr.rotation.x=Math.PI;arr.position.y=2.9;this.mk.add(ring,arr);this.sc.add(this.mk);
   this.state='menu';this.paused=false;this.acc=0;this.t=0;this.diff='normal';this.rec=[];this.D=DIFF.normal;
-  this.multiplayer=false;this.isHost=false;this.mpChannel=null;this.mpCode='';this.remoteActive=null;
+  this.multiplayer=false;this.isHost=false;this.mpChannel=null;this.lobbyChannel=null;this.mpCode='';this.remoteActive=null;this.mpStarted=false;this.mpWaiting=false;
   this.remoteInput={k:{},e:new Set(),ax:0,ay:0,d(k){return !!this.k[k]},hit(k){return this.e.delete('h'+k)},up(k){return this.e.delete('u'+k)},pad(){}};this.mpLastInput=0;this.mpLastState=0;this.mpReady=false;this.newMatch({home:'bra',away:'arg',len:300,off:true});
   addEventListener('resize',()=>this.resize());addEventListener('orientationchange',()=>setTimeout(()=>this.resize(),250));this.resize();this.bind();this.last=performance.now();requestAnimationFrame(t=>this.loop(t))}
 
+ sbClient(){
+  if(!window.supabase||!window.supabase.createClient)return null;
+  if(!this.sb){const URL='https://vnyrykyswutxobopcevb.supabase.co',KEY='sb_publishable_MYGSqz3di_4Ch9GH8y4tig_XpoKnYXd';this.sb=window.supabase.createClient(URL,KEY)}
+  return this.sb;
+ }
+ async ensureLobby(){
+  const sb=this.sbClient();if(!sb)return null;
+  if(this.lobbyChannel)return this.lobbyChannel;
+  const ch=sb.channel('camisa10-lobby',{config:{presence:{key:'lobby-'+Math.random().toString(36).slice(2,9)}}});
+  this._lobbyRooms={};
+  ch.on('presence',{event:'sync'},()=>{
+   const st=ch.presenceState(),rooms={};
+   Object.values(st).forEach(arr=>arr.forEach(p=>{if(p&&p.code&&p.role==='host'&&!p.started)rooms[p.code]={code:p.code,home:p.home,away:p.away,at:p.joined_at||0}}));
+   this._lobbyRooms=rooms;this.renderRoomList();
+  });
+  ch.on('broadcast',{event:'rooms'},({payload})=>{if(payload&&payload.rooms){this._lobbyRooms=payload.rooms;this.renderRoomList()}});
+  this.lobbyChannel=ch;
+  await new Promise((resolve,reject)=>{ch.subscribe(s=>{if(s==='SUBSCRIBED')resolve();else if(s==='CHANNEL_ERROR'||s==='TIMED_OUT')reject(new Error('Lobby offline'))})});
+  return ch;
+ }
+ renderRoomList(){
+  const el=$('mpRooms');if(!el)return;
+  const rooms=Object.values(this._lobbyRooms||{}).sort((a,b)=>(b.at||0)-(a.at||0));
+  if(!rooms.length){el.innerHTML='<div style="opacity:.6;text-align:center;padding:8px">Nenhuma sala aberta no momento.<br>Crie uma ou aguarde e atualize.</div>';return}
+  el.innerHTML=rooms.map(r=>{
+   const hn=TEAMS[r.home]?TEAMS[r.home].n:r.home,an=TEAMS[r.away]?TEAMS[r.away].n:r.away;
+   return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 8px;margin:4px 0;background:#ffffff12;border-radius:8px;border:1px solid #ffffff22">
+    <div style="min-width:0"><b style="color:#ffd400">${r.code}</b><br><span style="opacity:.85">${hn} × ${an}</span></div>
+    <button class="mini mpJoinCode" data-code="${r.code}" style="padding:6px 10px;font-size:12px;margin:0;width:auto">ENTRAR</button></div>`}).join('');
+  el.querySelectorAll('.mpJoinCode').forEach(b=>b.onclick=()=>{$('mpCode').value=b.dataset.code;$('mpJoin').click()});
+ }
+ async refreshRooms(){
+  $('mpRooms').innerHTML='<div style="opacity:.6;text-align:center;padding:8px">Atualizando...</div>';
+  try{await this.ensureLobby();const ch=this.lobbyChannel;if(ch)await ch.send({type:'broadcast',event:'ping',payload:{t:Date.now()}})}catch(e){$('mpRooms').innerHTML='<div style="opacity:.6;text-align:center;padding:8px">Não foi possível listar salas.</div>'}
+ }
  async connectRoom(role,code){
   if(!window.supabase||!window.supabase.createClient){$('mpStatus').textContent='Não foi possível carregar a biblioteca Supabase. Verifique sua conexão.';return}
-  const URL='https://vnyrykyswutxobopcevb.supabase.co';
-  const KEY='sb_publishable_MYGSqz3di_4Ch9GH8y4tig_XpoKnYXd';
   try{
-   if(this.mpChannel){await this.mpChannel.unsubscribe();this.mpChannel=null}
-   this.sb=window.supabase.createClient(URL,KEY);
-   this.mpCode=code;this.multiplayer=true;this.isHost=role==='host';this.mpReady=false;
+   if(this.mpChannel){try{await this.mpChannel.unsubscribe()}catch(e){}this.mpChannel=null}
+   const sb=this.sbClient();
+   this.mpCode=code;this.multiplayer=true;this.isHost=role==='host';this.mpReady=false;this.mpStarted=false;this.mpWaiting=role==='host';
    this.remoteInput.k={};this.remoteInput.e.clear();
-   const ch=this.sb.channel('camisa10-'+code,{config:{broadcast:{self:false},presence:{key:role+'-'+Math.random().toString(36).slice(2,8)}}});
+   const presenceKey=role+'-'+Math.random().toString(36).slice(2,8);
+   const ch=sb.channel('camisa10-'+code,{config:{broadcast:{self:false},presence:{key:presenceKey}}});
    ch.on('broadcast',{event:'input'},({payload})=>{if(this.isHost&&payload){this.remoteInput.k=payload.k||{};this.remoteInput.ax=payload.ax||0;this.remoteInput.ay=payload.ay||0;for(const k of payload.hit||[])this.remoteInput.e.add('h'+k);for(const k of payload.up||[])this.remoteInput.e.add('u'+k)}});
-   ch.on('broadcast',{event:'state'},({payload})=>{if(!this.isHost&&payload){if(!this.teams&&payload.opts)this.startGuest({opts:payload.opts});this.applyState(payload)}});
+   ch.on('broadcast',{event:'state'},({payload})=>{if(!this.isHost&&payload){this.startGuest(payload);this.applyState(payload)}});
    ch.on('broadcast',{event:'start'},({payload})=>{if(!this.isHost&&payload)this.startGuest(payload)});
-   ch.on('presence',{event:'sync'},()=>{const state=ch.presenceState();const count=Object.keys(state).length;$('mpStatus').textContent=count>1?'Adversário conectado!':'Aguardando adversário...'});
+   ch.on('broadcast',{event:'hello'},({payload})=>{if(this.isHost&&this.mpWaiting&&!this.mpStarted)this.hostStartMatch()});
+   ch.on('presence',{event:'sync'},()=>{
+    const state=ch.presenceState();const keys=Object.keys(state);const count=keys.length;
+    let hasGuest=false,hasHost=false;
+    keys.forEach(k=>state[k].forEach(p=>{if(p.role==='guest')hasGuest=true;if(p.role==='host')hasHost=true}));
+    if(this.isHost){
+     $('mpStatus').textContent=hasGuest?'Adversário conectado! Iniciando...':'Sala '+code+' — aguardando adversário... Código: '+code;
+     if(hasGuest&&this.mpWaiting&&!this.mpStarted)this.hostStartMatch();
+    }else{
+     $('mpStatus').textContent=hasHost?'Conectado ao anfitrião! Aguardando início...':'Conectado. Aguardando anfitrião...';
+    }
+   });
    this.mpChannel=ch;
    await new Promise((resolve,reject)=>{ch.subscribe(status=>{if(status==='SUBSCRIBED'){this.mpReady=true;resolve()}else if(status==='CHANNEL_ERROR'||status==='TIMED_OUT')reject(new Error('Não foi possível conectar à sala.'))})});
-   await ch.track({role,joined_at:new Date().toISOString()});
+   const trackPayload={role,joined_at:new Date().toISOString()};
    if(role==='host'){
     const o={home:$('mpTeam0').value,away:$('mpTeam1').value,len:300,off:true};
     if(o.home===o.away){const ids=Object.keys(TEAMS);o.away=ids[(ids.indexOf(o.home)+1)%ids.length]}
     this.opts=o;this.season=null;this.diff='normal';this.D=DIFF.normal;
-    this.newMatch(o);this.kickoff(0);this.state='play';this.paused=false;
-    $('mp').classList.remove('on');$('menu').classList.remove('on');
-    $('mpStatus').textContent='Sala '+code+' criada. Compartilhe o código!';
-    await ch.send({type:'broadcast',event:'start',payload:{opts:o}});
+    trackPayload.home=o.home;trackPayload.away=o.away;trackPayload.code=code;trackPayload.started=false;
+    await ch.track(trackPayload);
+    // announce in lobby
+    try{
+     const lobby=await this.ensureLobby();
+     await lobby.track({role:'host',code,home:o.home,away:o.away,joined_at:Date.now(),started:false});
+    }catch(e){}
+    $('mpStatus').textContent='Sala '+code+' criada. Aguardando adversário... Código: '+code;
+    toast('Sala '+code+' criada — aguarde o adversário');
    }else{
+    await ch.track(trackPayload);
     $('mpStatus').textContent='Conectado! Aguardando o anfitrião iniciar...';
-    $('mp').classList.remove('on');$('menu').classList.remove('on');
     await ch.send({type:'broadcast',event:'hello',payload:{role:'guest'}});
    }
-  }catch(e){console.error(e);this.multiplayer=false;this.isHost=false;this.mpReady=false;$('mpStatus').textContent='Erro: '+(e.message||'falha ao conectar');}
+  }catch(e){console.error(e);this.multiplayer=false;this.isHost=false;this.mpReady=false;this.mpWaiting=false;$('mpStatus').textContent='Erro: '+(e.message||'falha ao conectar');}
+ }
+ hostStartMatch(){
+  if(!this.isHost||this.mpStarted||!this.opts)return;
+  this.mpStarted=true;this.mpWaiting=false;
+  this.newMatch(this.opts);this.kickoff(0);this.state='play';this.paused=false;
+  $('mp').classList.remove('on');$('menu').classList.remove('on');
+  $('mpStatus').textContent='Partida iniciada!';
+  if(this.mpChannel){
+   this.mpChannel.send({type:'broadcast',event:'start',payload:{opts:this.opts}});
+   // re-send a few times in case of lag
+   setTimeout(()=>{if(this.mpChannel)this.mpChannel.send({type:'broadcast',event:'start',payload:{opts:this.opts}})},400);
+   setTimeout(()=>{if(this.mpChannel)this.mpChannel.send({type:'broadcast',event:'start',payload:{opts:this.opts}})},1200);
+  }
+  // update lobby presence so room disappears from open list
+  try{if(this.lobbyChannel)this.lobbyChannel.track({role:'host',code:this.mpCode,home:this.opts.home,away:this.opts.away,joined_at:Date.now(),started:true})}catch(e){}
  }
  startGuest(payload){
-  if(this.isHost)return;
-  if(!this.teams||!this.opts||this.opts.home!==payload.opts.home||this.opts.away!==payload.opts.away){
-   this.opts=payload.opts;this.newMatch(payload.opts);
-  }
+  if(this.isHost||this.mpStarted)return;
+  if(!payload||!payload.opts)return;
+  this.mpStarted=true;
+  const needNew=!this.opts||this.opts.home!==payload.opts.home||this.opts.away!==payload.opts.away||!this.teams;
+  this.opts=payload.opts;
+  if(needNew)this.newMatch(payload.opts);
   this.state='play';this.paused=false;this.remoteActive=this.teams[1].players[9];
   $('menu').classList.remove('on');$('mp').classList.remove('on');
   $('mpStatus').textContent='Partida online iniciada!';
+  toast('Partida online iniciada!');
  }
  sendRemoteInput(){
   if(!this.mpChannel)return;
@@ -482,13 +557,14 @@ class Game{
   for(const key of hit)I.e.delete('h'+key);for(const key of up)I.e.delete('u'+key);
  }
  broadcastState(){
-  if(!this.mpChannel)return;
+  if(!this.mpChannel||!this.mpStarted)return;
   const owner=this.ball.owner?this.all.indexOf(this.ball.owner):-1;
   const payload={opts:this.opts,players:this.all.map(p=>[p.x,p.z,p.a,p.vx,p.vz,p.stam]),ball:[this.ball.x,this.ball.y,this.ball.z,this.ball.vx,this.ball.vy,this.ball.vz,owner],score:this.teams.map(t=>t.st.score),clock:this.clock,state:this.state,timer:this.timer||0,active:this.all.indexOf(this.active),remoteActive:this.all.indexOf(this.remoteActive),gt:this.gt?this.gt.i:null};
   this.mpChannel.send({type:'broadcast',event:'state',payload});
  }
  applyState(d){
-  if(!this.teams&&d.opts){this.opts=d.opts;this.newMatch(d.opts)}
+  if(!d)return;
+  if(d.opts&&(!this.mpStarted||!this.opts||this.opts.home!==d.opts.home||this.opts.away!==d.opts.away)){this.startGuest(d)}
   if(!this.teams||!d.players)return;
   d.players.forEach((v,i)=>{const p=this.all[i];if(!p)return;p.ox=p.x;p.oz=p.z;p.x=v[0];p.z=v[1];p.a=v[2];p.vx=v[3];p.vz=v[4];p.stam=v[5]});
   const b=this.ball;b.ox=b.x;b.oy=b.y;b.oz=b.z;b.x=d.ball[0];b.y=d.ball[1];b.z=d.ball[2];b.vx=d.ball[3];b.vy=d.ball[4];b.vz=d.ball[5];b.owner=d.ball[6]>=0?this.all[d.ball[6]]:null;
@@ -498,8 +574,9 @@ class Game{
   if(d.gt!==null)this.gt=this.teams[d.gt];
  }
  disconnectRoom(){
-  if(this.mpChannel){this.mpChannel.unsubscribe();this.mpChannel=null}
-  this.multiplayer=false;this.isHost=false;this.mpReady=false;this.mpCode='';
+  if(this.mpChannel){try{this.mpChannel.unsubscribe()}catch(e){}this.mpChannel=null}
+  try{if(this.lobbyChannel)this.lobbyChannel.untrack()}catch(e){}
+  this.multiplayer=false;this.isHost=false;this.mpReady=false;this.mpStarted=false;this.mpWaiting=false;this.mpCode='';
   this.remoteInput.k={};this.remoteInput.e.clear();this.state='menu';this.paused=false;
  }
  cfg(t){return t.i?this.D:DIFF.normal}
@@ -697,9 +774,10 @@ const TC={br:'#ffd400',pl:'#c58bff',ucl:'#5ec2ff',wc:'#ffb300'};
 $('bTrf').onclick=()=>{$('trG').innerHTML=Object.keys(CH).map(k=>`<div class="it ${E.tr[k]?'':'lock'}">${cup(E.tr[k]?TC[k]:'#5b6578')}<b>${CH[k].n}</b><small>${E.tr[k]?'Conquistado! 🏆':'Bloqueado'}</small></div>`).join('');$('trf').classList.add('on')};
 const game=new Game();
 (()=>{const ids=Object.keys(TEAMS),opts=ids.map(i=>`<option value="${i}">${TEAMS[i].n}</option>`).join('');$('mpTeam0').innerHTML=opts;$('mpTeam1').innerHTML=opts;$('mpTeam0').value='bra';$('mpTeam1').value='arg';
- $('bMP').onclick=()=>{$('mp').classList.add('on');$('mpStatus').textContent='';$('mpCode').value=''};
- $('mpBack').onclick=()=>{$('mp').classList.remove('on')};
- $('mpCreate').onclick=async()=>{const code=Math.random().toString(36).slice(2,8).toUpperCase();$('mpStatus').textContent='Conectando...';await game.connectRoom('host',code);if(game.mpReady){$('mpStatus').textContent='Sala criada! Código: '+code+' — envie ao adversário.';toast('Sala '+code+' criada')}};
+ $('bMP').onclick=()=>{$('mp').classList.add('on');$('mpStatus').textContent='';$('mpCode').value='';game.refreshRooms()};
+ $('mpBack').onclick=()=>{if(game.mpWaiting&&!game.mpStarted)game.disconnectRoom();$('mp').classList.remove('on')};
+ $('mpRefresh').onclick=()=>game.refreshRooms();
+ $('mpCreate').onclick=async()=>{const code=Math.random().toString(36).slice(2,8).toUpperCase();$('mpStatus').textContent='Criando sala...';await game.connectRoom('host',code)};
  $('mpJoin').onclick=async()=>{const code=$('mpCode').value.trim().toUpperCase();if(!/^[A-Z0-9]{6}$/.test(code)){$('mpStatus').textContent='Digite um código válido de 6 caracteres.';return}$('mpStatus').textContent='Conectando à sala...';await game.connectRoom('guest',code)};
 })();
 /* ============ TOUCH CONTROLS (virtual stick + buttons) ============ */
